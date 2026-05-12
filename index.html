@@ -541,23 +541,36 @@ const SHEET_NAME = "Datos";
 let gToken = null;
 
 // ─── AUTH ─────────────────────────────────────────────────────────────────────
-function gsignIn() {
-  return new Promise((resolve, reject) => {
-    const client = google.accounts.oauth2.initTokenClient({
+let tokenClient = null;
+let gTokenExpiry = 0;
+
+function getTokenClient() {
+  if (!tokenClient) {
+    tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: CLIENT_ID,
       scope: SCOPES,
-      callback: (resp) => {
-        if (resp.error) { reject(resp.error); return; }
-        gToken = resp.access_token;
-        resolve(resp.access_token);
-      },
+      callback: () => {},
     });
-    client.requestAccessToken({ prompt: gToken ? "" : "consent" });
+  }
+  return tokenClient;
+}
+
+function gsignIn() {
+  return new Promise((resolve, reject) => {
+    const client = getTokenClient();
+    client.callback = (resp) => {
+      if (resp.error) { reject(new Error(resp.error)); return; }
+      gToken = resp.access_token;
+      gTokenExpiry = Date.now() + ((resp.expires_in || 3600) - 60) * 1000;
+      resolve(resp.access_token);
+    };
+    client.requestAccessToken({ prompt: "" });
   });
 }
 
 async function ensureAuth() {
-  if (!gToken) await gsignIn();
+  if (gToken && Date.now() < gTokenExpiry) return gToken;
+  await gsignIn();
   return gToken;
 }
 
@@ -1200,17 +1213,7 @@ function bindEvents() {
   const hrv=document.getElementById("hrv"); if(hrv) hrv.onchange=()=>{S.day.hrv=hrv.value;S.saved=false;};
 
   const sb=document.getElementById("save-btn");
-  if(sb) sb.onclick=()=>{
-    const w=document.getElementById("weight"), s=document.getElementById("steps"), n=document.getElementById("note"), wh=document.getElementById("whoop");
-    if(w) S.day.weight=w.value;
-    if(s) S.day.steps=s.value;
-    if(n) S.day.note=n.value;
-    if(wh) S.day.whoop=wh.value;
-    const hv=document.getElementById("hrv"); if(hv) S.day.hrv=hv.value;
-    saveDay(S.activeDate || today, S.day);
-    S.saved=true; render(); showToast("Guardado");
-    setTimeout(()=>{ S.saved=false; },2500);
-  };
+  if(sb) sb.onclick=()=>{ doSave(); };
 
   const eb=document.getElementById("export-btn"); if(eb) eb.onclick=exportData;
   const ib=document.getElementById("import-btn"); if(ib) ib.onclick=()=>document.getElementById("import-file").click();
@@ -1260,8 +1263,56 @@ function showToast(msg) {
 }
 
 // ─── INIT ────────────────────────────────────────────────────────────────────
-render();
-if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+async function initApp() {
+  S.loading = true;
+  S.authError = false;
+  render();
+  // Wait for GIS library to load (max 4 seconds)
+  let attempts = 0;
+  while (typeof google === "undefined" || !google.accounts) {
+    if (attempts++ > 20) { S.loading=false; S.authError=true; render(); return; }
+    await new Promise(r => setTimeout(r, 200));
+  }
+  try {
+    await ensureAuth();
+    await ensureHeaders();
+    const todayStr = TODAY();
+    const d = await loadDay(todayStr);
+    S.day = d || emptyDay();
+    S.day.meals = S.day.meals.map(m => ({ items:[], ...m }));
+    S.activeDate = todayStr;
+    S.loading = false;
+    render();
+  } catch(e) {
+    console.error("Init error:", e);
+    S.loading = false;
+    S.authError = true;
+    render();
+  }
+}
+
+async function doSave() {
+  const w=document.getElementById("weight"), st=document.getElementById("steps"),
+        n=document.getElementById("note"), wh=document.getElementById("whoop"),
+        hv=document.getElementById("hrv");
+  if(w)  S.day.weight = w.value;
+  if(st) S.day.steps  = st.value;
+  if(n)  S.day.note   = n.value;
+  if(wh) S.day.whoop  = wh.value;
+  if(hv) S.day.hrv    = hv.value;
+  const sb = document.getElementById("save-btn");
+  if(sb) { sb.textContent="Guardando..."; sb.disabled=true; }
+  await saveDay(S.activeDate || TODAY(), S.day);
+  S.saved = true;
+  render();
+  showToast("Guardado en Sheets");
+  setTimeout(()=>{ S.saved=false; }, 2500);
+}
+
+window.addEventListener("load", () => {
+  initApp();
+  if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
+});
 </script>
 </body>
 </html>
