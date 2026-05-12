@@ -96,6 +96,13 @@
   .hist-macros { display: flex; gap: 12px; }
   .hist-macro-val { font-family: 'Menlo', monospace; font-size: 13px; font-weight: 700; }
   .hist-note { margin-top: 8px; font-size: 11px; color: #666; border-top: 1px solid #222; padding-top: 8px; }
+  .delete-day-btn { background: none; border: none; font-size: 15px; cursor: pointer; padding: 0 2px; opacity: 0.5; }
+  .delete-day-btn:active { opacity: 1; }
+  .training-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+  .training-chip { display: flex; align-items: center; gap: 5px; padding: 7px 12px; border-radius: 8px; border: 1.5px solid #333; background: #111; color: #666; font-size: 12px; cursor: pointer; transition: all 0.15s; user-select: none; -webkit-user-select: none; }
+  .training-chip.selected { border-color: #c8f542; background: #c8f54218; color: #c8f542; font-weight: 600; }
+  .training-chip.descanso.selected { border-color: #60a5fa; background: #60a5fa18; color: #60a5fa; }
+  .training-chip.cardio.selected { border-color: #f87171; background: #f8717118; color: #f87171; }
   .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #c8f542; color: #000; padding: 10px 20px; border-radius: 8px; font-size: 13px; font-weight: 700; z-index: 200; box-shadow: 0 4px 20px #0008; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
   .toast.show { opacity: 1; }
   .empty { text-align: center; color: #666; font-size: 13px; margin-top: 60px; }
@@ -198,6 +205,18 @@ const PLAN_BASE = [
 
 const TARGETS = { kcal: 2050, prot: 185, carbs: 201, fat: 38 };
 const WHOOP_COLORS = { "Verde (70-100%)": "#4ade80", "Amarillo (34-69%)": "#fbbf24", "Rojo (0-33%)": "#f87171" };
+const TRAINING_OPTIONS = [
+  { id: "pecho", label: "Pecho", emoji: "🫁" },
+  { id: "espalda", label: "Espalda", emoji: "🔙" },
+  { id: "hombros", label: "Hombros", emoji: "🏋️" },
+  { id: "biceps", label: "Bíceps", emoji: "💪" },
+  { id: "triceps", label: "Tríceps", emoji: "🔱" },
+  { id: "pierna", label: "Pierna", emoji: "🦵" },
+  { id: "gluteos", label: "Glúteos", emoji: "🍑" },
+  { id: "core", label: "Core / Abdomen", emoji: "⚡" },
+  { id: "cardio", label: "Cardio", emoji: "🫀" },
+  { id: "descanso", label: "Descanso", emoji: "😴" },
+];
 const C = { prot: "#4ade80", carbs: "#60a5fa", fat: "#fbbf24", kcal: "#c8f542" };
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
@@ -212,14 +231,13 @@ function loadDay(date) {
 }
 function loadAllDays() {
   const days = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    if (key && key.startsWith(STORAGE_PREFIX)) {
-      try {
-        days.push({ date: key.replace(STORAGE_PREFIX, ""), ...JSON.parse(localStorage.getItem(key)) });
-      } catch {}
-    }
-  }
+  const keys = Object.keys(localStorage).filter(k => k.startsWith(STORAGE_PREFIX));
+  keys.forEach(key => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw) days.push({ date: key.replace(STORAGE_PREFIX, ""), ...JSON.parse(raw) });
+    } catch {}
+  });
   return days.sort((a, b) => b.date.localeCompare(a.date));
 }
 
@@ -267,7 +285,7 @@ function fmtDate(d) {
 function emptyDay() {
   return {
     meals: PLAN_BASE.map(m => Object.assign({}, m, { logged: false, custom: false, items: [] })),
-    weight: "", whoop: "", note: ""
+    weight: "", whoop: "", note: "", steps: "", training: []
   };
 }
 
@@ -354,6 +372,21 @@ function renderHoy(totals, loggedCount) {
           <option value="">— Selecciona</option>
           ${Object.keys(WHOOP_COLORS).map(k => `<option value="${k}" ${state.dayData.whoop === k ? 'selected' : ''}>${k}</option>`).join("")}
         </select>
+      </div>
+    </div>
+
+    <div style="margin-top:12px">
+      <div class="label" style="margin-bottom:6px">Pasos diarios</div>
+      <input type="number" inputmode="numeric" class="field-input" id="steps" placeholder="12000" value="${state.dayData.steps || ''}">
+    </div>
+
+    <div style="margin-top:12px">
+      <div class="label" style="margin-bottom:8px">Entrenamiento</div>
+      <div class="training-grid">
+        ${TRAINING_OPTIONS.map(t => {
+          const sel = (state.dayData.training || []).includes(t.id);
+          return `<div class="training-chip ${t.id} ${sel ? 'selected' : ''}" data-action="toggle-training" data-tid="${t.id}">${t.emoji} ${t.label}</div>`;
+        }).join("")}
       </div>
     </div>
 
@@ -509,6 +542,7 @@ function renderHistorial() {
           <div style="display:flex;gap:8px;align-items:center">
             ${d.weight ? `<span style="font-size:11px;color:#666;font-family:'Menlo',monospace">${d.weight} kg</span>` : ''}
             ${d.whoop ? `<span style="font-size:10px;color:${wc};font-family:'Menlo',monospace">● ${d.whoop.split(' ')[0]}</span>` : ''}
+            <button class="delete-day-btn" data-action="delete-day" data-date="${d.date}" title="Borrar día">🗑</button>
           </div>
         </div>
         <div class="hist-macros">
@@ -517,6 +551,8 @@ function renderHistorial() {
           <div><div style="font-size:9px;color:#666">C</div><div class="hist-macro-val" style="color:${C.carbs}">${r0(t.carbs)}g</div></div>
           <div><div style="font-size:9px;color:#666">G</div><div class="hist-macro-val" style="color:${C.fat}">${r0(t.fat)}g</div></div>
         </div>
+        ${(d.training && d.training.length) ? `<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">${d.training.map(tid => { const opt = TRAINING_OPTIONS.find(o => o.id === tid); return opt ? `<span style="font-size:10px;background:#333;border-radius:4px;padding:2px 6px;color:#aaa">${opt.emoji} ${opt.label}</span>` : ''; }).join("")}</div>` : ''}
+        ${d.steps ? `<div style="font-size:11px;color:#666;margin-top:6px;font-family:'Menlo',monospace">👟 ${parseInt(d.steps).toLocaleString()} pasos</div>` : ''}
         ${d.note ? `<div class="hist-note">${d.note}</div>` : ''}
       </div>
     `;
@@ -630,6 +666,36 @@ function bindEvents() {
         state.pickerCat = Object.keys(CATALOGO)[0];
         renderPicker();
       };
+    } else if (action === "toggle-training") {
+      el.onclick = () => {
+        const tid = el.dataset.tid;
+        let training = [...(state.dayData.training || [])];
+        // Descanso is exclusive
+        if (tid === "descanso") {
+          training = training.includes("descanso") ? [] : ["descanso"];
+        } else {
+          // Remove descanso if selecting anything else
+          training = training.filter(t => t !== "descanso");
+          if (training.includes(tid)) {
+            training = training.filter(t => t !== tid);
+          } else {
+            training.push(tid);
+          }
+        }
+        state.dayData.training = training;
+        state.saved = false;
+        render();
+      };
+    } else if (action === "delete-day") {
+      el.onclick = () => {
+        const date = el.dataset.date;
+        const label = fmtDate(date);
+        if (confirm('¿Borrar el día ' + label + '? Esta acción no se puede deshacer.')) {
+          localStorage.removeItem(STORAGE_PREFIX + date);
+          showToast('Día ' + label + ' borrado');
+          render();
+        }
+      };
     } else if (action === "remove-item") {
       el.onclick = () => {
         const mi = +el.dataset.meal;
@@ -658,17 +724,19 @@ function bindEvents() {
 
   const sb = document.getElementById("save-btn");
   if (sb) sb.onclick = () => {
-    // Capture current input values
     const wi = document.getElementById("weight");
     const ni = document.getElementById("note");
+    const whi = document.getElementById("whoop");
     if (wi) state.dayData.weight = wi.value;
     if (ni) state.dayData.note = ni.value;
-
+    if (whi) state.dayData.whoop = whi.value;
+    const si = document.getElementById("steps");
+    if (si) state.dayData.steps = si.value;
     saveDay(today, state.dayData);
     state.saved = true;
     render();
-    showToast("Día guardado");
-    setTimeout(() => { state.saved = false; }, 2000);
+    showToast("Día guardado ✓");
+    setTimeout(() => { state.saved = false; }, 2500);
   };
 
   const eb = document.getElementById("export-btn");
