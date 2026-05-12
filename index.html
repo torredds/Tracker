@@ -224,7 +224,12 @@ function loadAllDays() {
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
-const TODAY = () => new Date().toISOString().split("T")[0];
+const TODAY = () => {
+  const d = new Date();
+  return d.getFullYear() + '-' +
+    String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0');
+};
 function findFood(id) {
   for (const cat of Object.values(CATALOGO)) {
     const f = cat.find(x => x.id === id);
