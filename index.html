@@ -8,7 +8,6 @@
 <meta name="apple-mobile-web-app-title" content="Tracker">
 <meta name="theme-color" content="#ffffff">
 <link rel="manifest" href="manifest.json">
-<script src="https://accounts.google.com/gsi/client" async defer></script>
 <link rel="apple-touch-icon" href="icon-180.png">
 <title>Tracker</title>
 <style>
@@ -532,168 +531,86 @@ const PLAN_BASE = PLAN_BASE_IDS.map(p => {
   return { id:p.id, nombre:p.nombre, kcal:Math.round(t.kcal), prot:Math.round(t.prot), carbs:Math.round(t.carbs), fat:Math.round(t.fat*10)/10 };
 });
 
-// ─── GOOGLE SHEETS CONFIG ────────────────────────────────────────────────────
-const CLIENT_ID = "471933281479-135f2iqta686tdgsjjjn02rqo4c9i6qv.apps.googleusercontent.com";
-const SHEET_ID  = "16OF5-7hpWfy--gWmD3nMaNwtC4JEFW0F79YY_cvp0KI";
-const SCOPES    = "https://www.googleapis.com/auth/spreadsheets";
-const SHEET_NAME = "Datos";
+// ─── APPS SCRIPT API ─────────────────────────────────────────────────────────
+const API_URL = "https://script.google.com/macros/s/AKfycbwtVgaYNoLLfisJSDxPRbMhhB7OcRvKV7YuDB3KQXAVn_JrW9HQYBPLFJQ9G-C2kJMb/exec";
 
-let gToken = null;
-
-// ─── AUTH ─────────────────────────────────────────────────────────────────────
-let tokenClient = null;
-let gTokenExpiry = 0;
-
-function getTokenClient() {
-  if (!tokenClient) {
-    tokenClient = google.accounts.oauth2.initTokenClient({
-      client_id: CLIENT_ID,
-      scope: SCOPES,
-      callback: () => {},
-    });
-  }
-  return tokenClient;
-}
-
-function gsignIn() {
-  return new Promise((resolve, reject) => {
-    const client = getTokenClient();
-    client.callback = (resp) => {
-      if (resp.error) { reject(new Error(resp.error)); return; }
-      gToken = resp.access_token;
-      gTokenExpiry = Date.now() + ((resp.expires_in || 3600) - 60) * 1000;
-      resolve(resp.access_token);
-    };
-    client.requestAccessToken({ prompt: "" });
-  });
-}
-
-async function ensureAuth() {
-  if (gToken && Date.now() < gTokenExpiry) return gToken;
-  await gsignIn();
-  return gToken;
-}
-
-// ─── SHEETS API ───────────────────────────────────────────────────────────────
-async function sheetsGet(range) {
-  const token = await ensureAuth();
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}`;
-  const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!r.ok) throw new Error("Sheets GET failed: " + r.status);
+async function apiGet() {
+  const r = await fetch(API_URL, { method:"GET" });
+  if (!r.ok) throw new Error("API GET failed: " + r.status);
   return r.json();
 }
 
-async function sheetsAppend(range, values) {
-  const token = await ensureAuth();
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`;
-  const r = await fetch(url, {
+async function apiPost(body) {
+  const r = await fetch(API_URL, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ values }),
+    body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error("Sheets APPEND failed: " + r.status);
-  return r.json();
-}
-
-async function sheetsUpdate(range, values) {
-  const token = await ensureAuth();
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}?valueInputOption=RAW`;
-  const r = await fetch(url, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ values }),
-  });
-  if (!r.ok) throw new Error("Sheets UPDATE failed: " + r.status);
-  return r.json();
-}
-
-async function sheetsClear(range) {
-  const token = await ensureAuth();
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}/values/${encodeURIComponent(range)}:clear`;
-  const r = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-  });
-  if (!r.ok) throw new Error("Sheets CLEAR failed: " + r.status);
+  if (!r.ok) throw new Error("API POST failed: " + r.status);
   return r.json();
 }
 
 // ─── STORAGE ─────────────────────────────────────────────────────────────────
-// Each row in Sheets: [date, json_data]
-// Sheet headers: Date | Data
+// Local cache prefix
+const PFX = "tracker:day:";
 
-async function ensureHeaders() {
-  try {
-    const res = await sheetsGet(`${SHEET_NAME}!A1`);
-    if (!res.values || res.values[0][0] !== "Date") {
-      await sheetsUpdate(`${SHEET_NAME}!A1:B1`, [["Date","Data"]]);
-    }
-  } catch {}
-}
+// Cache to avoid re-fetching all days on every operation
+let _daysCache = null;
 
 async function saveDay(date, data) {
-  // Also save to localStorage as offline cache
-  localStorage.setItem("tracker:day:" + date, JSON.stringify(data));
-  try {
-    await ensureAuth();
-    const payload = JSON.stringify(data);
-    // Check if row exists
-    const res = await sheetsGet(`${SHEET_NAME}!A:A`);
-    const rows = res.values || [];
-    const rowIdx = rows.findIndex(r => r[0] === date);
-    if (rowIdx === -1) {
-      // Append new row
-      await sheetsAppend(`${SHEET_NAME}!A:B`, [[date, payload]]);
-    } else {
-      // Update existing row (rowIdx+1 because sheets is 1-indexed)
-      await sheetsUpdate(`${SHEET_NAME}!A${rowIdx+1}:B${rowIdx+1}`, [[date, payload]]);
-    }
-  } catch (e) {
-    console.warn("Sheets save failed, data in localStorage:", e);
+  // Always update local cache immediately
+  localStorage.setItem(PFX + date, JSON.stringify(data));
+  if (_daysCache) {
+    const idx = _daysCache.findIndex(d => d.date === date);
+    const entry = { date, ...data };
+    if (idx === -1) _daysCache.unshift(entry);
+    else _daysCache[idx] = entry;
   }
+  // Write to Sheets via Apps Script
+  try {
+    await apiPost({ action:"save", date, payload:data });
+  } catch(e) { console.warn("Remote save failed, cached locally:", e); }
 }
 
 async function loadDay(date) {
+  // Try remote first
   try {
-    await ensureAuth();
-    const res = await sheetsGet(`${SHEET_NAME}!A:B`);
-    const rows = res.values || [];
-    const row = rows.find(r => r[0] === date);
-    if (row && row[1]) return JSON.parse(row[1]);
-  } catch {}
+    const res = await apiGet();
+    if (res.ok) {
+      _daysCache = res.days.sort((a,b) => b.date.localeCompare(a.date));
+      // Also update localStorage cache
+      res.days.forEach(d => {
+        const { date:dt, ...rest } = d;
+        localStorage.setItem(PFX + dt, JSON.stringify(rest));
+      });
+      const found = res.days.find(d => d.date === date);
+      return found ? (({ date:_, ...rest }) => rest)(found) : null;
+    }
+  } catch(e) { console.warn("Remote load failed, using localStorage:", e); }
   // Fallback to localStorage
-  try { const r = localStorage.getItem("tracker:day:" + date); return r ? JSON.parse(r) : null; } catch { return null; }
+  try { const r = localStorage.getItem(PFX + date); return r ? JSON.parse(r) : null; } catch { return null; }
 }
 
 async function loadAllDays() {
+  if (_daysCache) return _daysCache;
   try {
-    await ensureAuth();
-    const res = await sheetsGet(`${SHEET_NAME}!A:B`);
-    const rows = (res.values || []).filter(r => r[0] && r[0] !== "Date" && r[1]);
-    return rows
-      .map(r => { try { return { date: r[0], ...JSON.parse(r[1]) }; } catch { return null; } })
-      .filter(Boolean)
-      .sort((a,b) => b.date.localeCompare(a.date));
-  } catch {}
-  // Fallback to localStorage
+    const res = await apiGet();
+    if (res.ok) {
+      _daysCache = res.days.sort((a,b) => b.date.localeCompare(a.date));
+      return _daysCache;
+    }
+  } catch(e) { console.warn("Remote loadAll failed, using localStorage:", e); }
+  // Fallback
   const days = [];
-  Object.keys(localStorage).filter(k => k.startsWith("tracker:day:")).forEach(k => {
-    try { const r = localStorage.getItem(k); if (r) days.push({ date: k.replace("tracker:day:",""), ...JSON.parse(r) }); } catch {}
+  Object.keys(localStorage).filter(k => k.startsWith(PFX)).forEach(k => {
+    try { const r = localStorage.getItem(k); if(r) days.push({ date:k.replace(PFX,""), ...JSON.parse(r) }); } catch {}
   });
   return days.sort((a,b) => b.date.localeCompare(a.date));
 }
 
 async function deleteDay(date) {
-  localStorage.removeItem("tracker:day:" + date);
-  try {
-    await ensureAuth();
-    const res = await sheetsGet(`${SHEET_NAME}!A:A`);
-    const rows = res.values || [];
-    const rowIdx = rows.findIndex(r => r[0] === date);
-    if (rowIdx !== -1) {
-      await sheetsClear(`${SHEET_NAME}!A${rowIdx+1}:B${rowIdx+1}`);
-    }
-  } catch (e) { console.warn("Sheets delete failed:", e); }
+  localStorage.removeItem(PFX + date);
+  if (_daysCache) _daysCache = _daysCache.filter(d => d.date !== date);
+  try { await apiPost({ action:"delete", date }); } catch(e) { console.warn("Remote delete failed:", e); }
 }
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
@@ -739,7 +656,6 @@ let S = {
   picker:null, pickerSearch:"", pickerCat:Object.keys(CATALOGO)[0],
   saved:false,
   loading:true,
-  authError:false,
 };
 
 // ─── RENDER ──────────────────────────────────────────────────────────────────
@@ -753,19 +669,8 @@ function renderLoading() {
     </div>
     <style>@keyframes spin{to{transform:rotate(360deg)}}</style>`;
 }
-function renderAuthError() {
-  document.getElementById("app").innerHTML = `
-    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:16px;padding:40px;text-align:center">
-      <div style="font-size:15px;font-weight:700;color:#111">Tracker</div>
-      <div style="font-size:13px;color:#aaa;line-height:1.6">Para usar el tracker necesitas conectar tu cuenta Google.</div>
-      <button onclick="initApp()" style="background:#111;color:#fff;border:none;border-radius:8px;padding:12px 24px;font-size:14px;font-weight:600;cursor:pointer">
-        Conectar con Google
-      </button>
-    </div>`;
-}
 function render() {
   if (S.loading) { renderLoading(); return; }
-  if (S.authError) { renderAuthError(); return; }
   const TARGETS = getWeekTargets();
   const todayStr = TODAY();
   const yesterdayStr = YESTERDAY();
@@ -1265,30 +1170,19 @@ function showToast(msg) {
 // ─── INIT ────────────────────────────────────────────────────────────────────
 async function initApp() {
   S.loading = true;
-  S.authError = false;
   render();
-  // Wait for GIS library to load (max 4 seconds)
-  let attempts = 0;
-  while (typeof google === "undefined" || !google.accounts) {
-    if (attempts++ > 20) { S.loading=false; S.authError=true; render(); return; }
-    await new Promise(r => setTimeout(r, 200));
-  }
   try {
-    await ensureAuth();
-    await ensureHeaders();
     const todayStr = TODAY();
     const d = await loadDay(todayStr);
     S.day = d || emptyDay();
     S.day.meals = S.day.meals.map(m => ({ items:[], ...m }));
     S.activeDate = todayStr;
-    S.loading = false;
-    render();
   } catch(e) {
     console.error("Init error:", e);
-    S.loading = false;
-    S.authError = true;
-    render();
+    S.day = emptyDay();
   }
+  S.loading = false;
+  render();
 }
 
 async function doSave() {
