@@ -392,8 +392,7 @@ const PLAN_BASE_IDS = [
 ];
 // Se define despues de DIETA_REF — ver abajo
 
-// TARGETS se calculan dinamicamente via getWeekTargets()
-const TARGETS = getWeekTargets();
+// TARGETS calculados localmente en cada funcion via getWeekTargets()
 const WATER_GOAL = 12; // vasos de 250ml = 3L
 const START_DATE = new Date(2026, 4, 10); // 10 mayo 2026 — fin del deficit
 
@@ -550,6 +549,11 @@ function TODAY() {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
+function YESTERDAY() {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
 function findFood(id) { for (const cat of Object.values(CATALOGO)) { const f = cat.find(x=>x.id===id); if(f) return f; } return null; }
 function macrosFromItem(it) {
   const f = findFood(it.catalogId); if(!f) return {kcal:0,prot:0,carbs:0,fat:0};
@@ -585,6 +589,10 @@ let S = {
 
 // ─── RENDER ──────────────────────────────────────────────────────────────────
 function render() {
+  const TARGETS = getWeekTargets();
+  const todayStr = TODAY();
+  const yesterdayStr = YESTERDAY();
+  const activeDate = S.activeDate || todayStr;
   const totals = dayTotals(S.day.meals);
   const kcalPct = pct(totals.kcal, TARGETS.kcal);
   document.getElementById("app").innerHTML = `
@@ -592,10 +600,20 @@ function render() {
       <div class="hdr-top">
         <div class="hdr-title">Tracker</div>
         <div style="text-align:right">
-          <div class="hdr-date">${fmtDate(today)}</div>
+          <div class="hdr-date">${fmtDate(activeDate)}</div>
           <div style="font-size:10px;color:#bbb;margin-top:1px">${getWeekTargets().label} · ${getWeekTargets().kcal} kcal</div>
         </div>
       </div>
+      ${S.tab === "hoy" ? `
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0 2px">
+          ${activeDate === yesterdayStr ?
+            `<span style="font-size:11px;font-weight:600;color:#b45309;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;padding:3px 8px">Editando ayer</span>
+             <button data-action="switch-date" data-date="${todayStr}" style="background:none;border:none;font-size:11px;color:#111;font-weight:700;cursor:pointer;text-decoration:underline">Volver a hoy</button>`
+            :
+            `<span></span>
+             <button data-action="switch-date" data-date="${yesterdayStr}" style="background:none;border:1px solid #e8e8e8;border-radius:6px;padding:4px 10px;font-size:11px;color:#999;cursor:pointer">Editar ayer</button>`
+          }
+        </div>` : ''}
       <div class="tabs">
         ${["hoy","dieta","entreno","historial"].map(t=>`
           <button class="tab ${S.tab===t?'active':''}" data-tab="${t}">
@@ -843,6 +861,7 @@ function renderEntreno() {
 
 // ─── HISTORIAL ───────────────────────────────────────────────────────────────
 function renderHistorial() {
+  const TARGETS = getWeekTargets();
   const history = loadAllDays().filter(d=>d.date!==today);
   if(!history.length) return `<div class="empty">Sin dias guardados.<br><span style="font-size:12px">Guarda el dia de hoy para empezar.</span></div>`;
 
@@ -976,7 +995,7 @@ function bindEvents() {
       const v=+el.dataset.v;
       S.day.water = S.day.water===v ? v-1 : v;
       S.saved=false;
-      saveDay(today, S.day); // auto-save water immediately
+      saveDay(S.activeDate || today, S.day); // auto-save water immediately
       render();
     };
     else if(a==="training") el.onclick=()=>{
@@ -996,6 +1015,17 @@ function bindEvents() {
   });
 
   // Fields
+  document.querySelectorAll("[data-action='switch-date']").forEach(b => b.onclick=()=>{
+    const date = b.dataset.date;
+    const loaded = loadDay(date) || emptyDay();
+    loaded.meals = loaded.meals.map(m=>({items:[],...m}));
+    S.day = loaded;
+    S.activeDate = date;
+    S.expanded = {};
+    S.saved = false;
+    render();
+  });
+
   const weight=document.getElementById("weight"); if(weight) weight.onchange=()=>{S.day.weight=weight.value;S.saved=false;};
   const steps=document.getElementById("steps"); if(steps) steps.onchange=()=>{S.day.steps=steps.value;S.saved=false;};
   const whoop=document.getElementById("whoop"); if(whoop) whoop.onchange=()=>{S.day.whoop=whoop.value;S.saved=false;render();};
@@ -1010,7 +1040,7 @@ function bindEvents() {
     if(n) S.day.note=n.value;
     if(wh) S.day.whoop=wh.value;
     const hv=document.getElementById("hrv"); if(hv) S.day.hrv=hv.value;
-    saveDay(today, S.day);
+    saveDay(S.activeDate || today, S.day);
     S.saved=true; render(); showToast("Guardado");
     setTimeout(()=>{ S.saved=false; },2500);
   };
