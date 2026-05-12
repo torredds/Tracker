@@ -677,7 +677,9 @@ function render() {
   const activeDate = S.activeDate || todayStr;
   const totals = dayTotals(S.day.meals);
   const kcalPct = pct(totals.kcal, TARGETS.kcal);
-  document.getElementById("app").innerHTML = `
+  // For async tabs, render shell first then fill content
+  const appEl = document.getElementById("app");
+  appEl.innerHTML = `
     <div class="hdr">
       <div class="hdr-top">
         <div class="hdr-title">Tracker</div>
@@ -707,11 +709,18 @@ function render() {
       ${S.tab==="hoy"    ? renderHoy(totals,kcalPct)
       : S.tab==="dieta"  ? renderDieta()
       : S.tab==="entreno"? renderEntreno()
-      :                    renderHistorial()}
+      :                    '<div id="hist-placeholder"><div class="empty">Cargando...</div></div>'}
     </div>
   `;
   bindEvents();
   if(S.picker!==null) renderPicker();
+  // Load historial asynchronously after DOM is ready
+  if(S.tab === "historial") {
+    renderHistorial().then(html => {
+      const ph = document.getElementById("hist-placeholder");
+      if(ph) ph.outerHTML = html;
+    });
+  }
 }
 
 // ─── HOY ─────────────────────────────────────────────────────────────────────
@@ -943,9 +952,9 @@ function renderEntreno() {
 }
 
 // ─── HISTORIAL ───────────────────────────────────────────────────────────────
-function renderHistorial() {
+async function renderHistorial() {
   const TARGETS = getWeekTargets();
-  const history = loadAllDays().filter(d=>d.date!==today);
+  const history = (await loadAllDays()).filter(d=>d.date!==today);
   if(!history.length) return `<div class="empty">Sin dias guardados.<br><span style="font-size:12px">Guarda el dia de hoy para empezar.</span></div>`;
 
   let html = '';
@@ -1138,8 +1147,8 @@ function bindPickerEvents() {
 }
 
 // ─── BACKUP ──────────────────────────────────────────────────────────────────
-function exportData() {
-  const d=new Date(), all=loadAllDays();
+async function exportData() {
+  const d=new Date(), all=await loadAllDays();
   const date=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
   const blob=new Blob([JSON.stringify({exported:d.toISOString(),days:all},null,2)],{type:"application/json"});
   const url=URL.createObjectURL(blob), a=document.createElement("a");
